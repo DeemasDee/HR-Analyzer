@@ -10,7 +10,7 @@ st.set_page_config(page_title="HAR Performance Analyzer", layout="wide")
 st.title("📊 HAR Performance Analyzer")
 st.markdown("""
 Analisis performa web otomatis dari dua file **.HAR** (Desktop & Mobile).  
-Menampilkan metrik teknis, perbandingan **Desktop vs Mobile**, grafik **timeline waterfall**, serta deskripsi interpretatif untuk non-teknis.
+Menampilkan metrik teknis, perbandingan **Desktop vs Mobile**, grafik **timeline waterfall**, serta deskripsi interpretatif agar mudah dipahami oleh non-teknis.
 """)
 
 col1, col2 = st.columns(2)
@@ -35,7 +35,6 @@ def extract_metrics(har_data, device_label):
         ssl = None if timings.get("ssl", 0) < 0 else timings.get("ssl", 0)
         wait = max(timings.get("wait", 0), 0)
         receive = max(timings.get("receive", 0), 0)
-
         domain = url.split("/")[2] if "//" in url else url
 
         rows.append({
@@ -67,15 +66,18 @@ def describe_comparison(df):
 
     desktop, mobile = summary.loc["Desktop"], summary.loc["Mobile"]
     ratio = desktop["total"] / mobile["total"] if mobile["total"] > 0 else np.nan
+    faster = "Mobile" if ratio > 1 else "Desktop"
+    ratio_display = ratio if ratio > 1 else 1 / ratio
 
     reuse_info = df.groupby("device")[["dns_reused", "conn_reused", "ssl_reused"]].mean() * 100
 
     desc = f"""
 🧠 **Analisis & Interpretasi**
-⚡ Rata-rata total waktu Desktop: **{desktop['total']:.2f} ms**  
-⚡ Rata-rata total waktu Mobile: **{mobile['total']:.2f} ms**
 
-👉 Secara keseluruhan, **Mobile {ratio:.2f}x lebih cepat dibanding Desktop.**
+⚡ **Rata-rata total waktu Desktop:** {desktop['total']:.2f} ms  
+⚡ **Rata-rata total waktu Mobile:** {mobile['total']:.2f} ms  
+
+👉 Secara keseluruhan, **{faster} {ratio_display:.2f}x lebih cepat** dibanding lainnya.
 
 📊 **Detail Perbedaan Tiap Komponen:**
 """
@@ -89,7 +91,7 @@ def describe_comparison(df):
         elif diff < 0:
             desc += f"- **{col.upper()}** pada **Desktop** lebih cepat {abs(diff):.2f} ms.\n"
         else:
-            desc += f"- **{col.upper()}** memiliki waktu yang sama di kedua perangkat.\n"
+            desc += f"- **{col.upper()}** hampir sama di kedua perangkat.\n"
 
     desc += "\n♻️ **Reuse Connection / Cache:**"
     for dev in reuse_info.index:
@@ -98,7 +100,7 @@ def describe_comparison(df):
         ssl_reuse = reuse_info.loc[dev, "ssl_reused"]
         desc += f"\n- **{dev}**: DNS reuse {dns_reuse:.1f}%, TCP reuse {conn_reuse:.1f}%, SSL reuse {ssl_reuse:.1f}%."
 
-    desc += "\n\n💡 Nilai reuse tinggi menunjukkan browser berhasil memanfaatkan koneksi/persistent cache untuk mempercepat load."
+    desc += "\n\n💡 Nilai reuse tinggi menunjukkan browser berhasil memanfaatkan koneksi lama (persistent connection) atau cache, sehingga mempercepat load halaman."
     return desc
 
 # ========== Fungsi Heatmap Bottleneck ==========
@@ -120,6 +122,21 @@ def plot_bottleneck_heatmap(df):
         nbinsx=6
     )
     st.plotly_chart(fig, use_container_width=True)
+
+# ========== Fungsi Penjelasan Tiap Komponen ==========
+def explain_components():
+    explanations = {
+        "DNS": "Proses menerjemahkan nama domain menjadi alamat IP. Nilai kecil berarti lookup cepat.",
+        "CONNECT": "Waktu membuka koneksi TCP ke server. Nilai tinggi bisa berarti jaringan lambat.",
+        "SSL": "Proses handshake SSL/TLS untuk membuat koneksi aman HTTPS.",
+        "TTFB": "Time To First Byte — waktu sampai browser menerima data pertama dari server.",
+        "RECEIVE": "Waktu yang dibutuhkan untuk mengunduh seluruh data setelah koneksi terbuka.",
+        "TOTAL": "Waktu total dari permintaan hingga semua data selesai diterima."
+    }
+
+    st.subheader("💬 Penjelasan Sederhana Tiap Komponen")
+    for key, val in explanations.items():
+        st.markdown(f"**{key}** → {val}")
 
 # ========== MAIN ==========
 if desktop_file and mobile_file:
@@ -161,14 +178,16 @@ if desktop_file and mobile_file:
     st.plotly_chart(fig2, use_container_width=True)
 
     # Analisis & interpretasi
-    st.subheader("🧠 Analisis & Interpretasi")
     st.markdown(describe_comparison(df))
 
     # Heatmap bottleneck
     plot_bottleneck_heatmap(df)
 
+    # Penjelasan tambahan
+    explain_components()
+
 else:
     st.info("⬆️ Upload dua file HAR (Desktop dan Mobile) untuk memulai analisis.")
 
 st.markdown("---")
-st.caption("Version Dev v2.1 — Dual HAR Comparison + Bottleneck Heatmap")
+st.caption("Version Dev v2.2 — Dual HAR Analyzer + Descriptive Insights")
