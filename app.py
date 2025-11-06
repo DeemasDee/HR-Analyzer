@@ -1,95 +1,166 @@
 import streamlit as st
 import json
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px
 import numpy as np
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="HAR Analyzer - Desktop vs Mobile", layout="wide")
+st.set_page_config(page_title="HAR Performance Analyzer Pro", layout="wide")
 
-st.title("📊 HAR Analyzer - Perbandingan Desktop vs Mobile")
+st.title("📊 HAR Performance Analyzer — Pro Edition")
 st.markdown("""
-Upload dua file HAR (Desktop dan Mobile) untuk menganalisis performa dan membandingkan komponen waktu (DNS, Connect, SSL, TTFB, Receive, dan Total Time).
+Analisis performa web otomatis dari file **.HAR** (HTTP Archive).  
+Menampilkan metrik teknis, perbandingan **Desktop vs Mobile**, grafik **timeline waterfall**, serta skor performa dan deteksi **bottleneck**.
 """)
 
-# --- Upload section
-col1, col2 = st.columns(2)
-with col1:
-    har_desktop = st.file_uploader("💻 Upload HAR Desktop", type=["har"])
-with col2:
-    har_mobile = st.file_uploader("📱 Upload HAR Mobile", type=["har"])
+uploaded_file = st.file_uploader("📁 Upload HAR file", type=["har"])
 
-if har_desktop and har_mobile:
-    def extract_timings(har_file):
-        har_data = json.load(har_file)
-        entries = har_data["log"]["entries"]
-        timing_data = []
-        for e in entries:
-            t = e["timings"]
-            total_time = sum(v for v in t.values() if isinstance(v, (int, float)) and v >= 0)
-            timing_data.append({
-                "DNS": t.get("dns", 0),
-                "Connect": t.get("connect", 0),
-                "SSL": t.get("ssl", 0),
-                "TTFB": t.get("wait", 0),
-                "Receive": t.get("receive", 0),
-                "TotalTime": total_time
-            })
-        return pd.DataFrame(timing_data).mean()
+# ========== Fungsi Ekstraksi ==========
+def extract_metrics(har_data):
+    entries = har_data["log"]["entries"]
+    rows = []
 
-    df_desktop = extract_timings(har_desktop)
-    df_mobile = extract_timings(har_mobile)
+    for e in entries:
+        timings = e["timings"]
+        url = e["request"]["url"]
+        start_time = e["startedDateTime"]
+        total_time = e["time"]
 
-    # Combine
-    df_compare = pd.DataFrame({
-        "Desktop (ms)": df_desktop,
-        "Mobile (ms)": df_mobile
-    })
-    df_compare["Perbedaan (Desktop - Mobile)"] = df_compare["Desktop (ms)"] - df_compare["Mobile (ms)"]
+        # deteksi user-agent
+        headers = e["request"].get("headers", [])
+        user_agent = ""
+        for h in headers:
+            if h["name"].lower() == "user-agent":
+                user_agent = h["value"]
+                break
 
-    st.subheader("📋 Rata-rata Waktu Tiap Komponen")
-    st.dataframe(df_compare.style.format("{:.2f}"))
+        device_type = "Mobile" if "Mobile" in user_agent or "Android" in user_agent else "Desktop"
 
-    # --- Chart
-    st.subheader("📈 Perbandingan Visual")
-    fig, ax = plt.subplots(figsize=(8, 4))
-    x = np.arange(len(df_compare.index))
-    ax.bar(x - 0.2, df_compare["Desktop (ms)"], width=0.4, label="Desktop")
-    ax.bar(x + 0.2, df_compare["Mobile (ms)"], width=0.4, label="Mobile")
-    ax.set_xticks(x)
-    ax.set_xticklabels(df_compare.index)
-    ax.set_ylabel("Rata-rata waktu (ms)")
-    ax.legend()
-    st.pyplot(fig)
+        dns = max(timings.get("dns", 0), 0)
+        connect = max(timings.get("connect", 0), 0)
+        ssl = max(timings.get("ssl", 0), 0)
+        wait = max(timings.get("wait", 0), 0)
+        receive = max(timings.get("receive", 0), 0)
 
-    # --- Analisis otomatis
-    st.subheader("🧠 Analisis & Interpretasi Otomatis")
+        rows.append({
+            "url": url.split("?")[0],
+            "device": device_type,
+            "dns": dns,
+            "connect": connect,
+            "ssl": ssl,
+            "ttfb": wait,
+            "receive": receive,
+            "total": total_time,
+            "startedDateTime": start_time
+        })
 
-    total_d = df_desktop["TotalTime"]
-    total_m = df_mobile["TotalTime"]
+    df = pd.DataFrame(rows)
+    df["startedDateTime"] = pd.to_datetime(df["startedDateTime"])
+    df["end_time"] = df["startedDateTime"] + pd.to_timedelta(df["total"], unit='ms')
+    return df
 
-    ratio = total_d / total_m if total_m else 1
-    faster = "Mobile" if total_m < total_d else "Desktop"
+# ========== Fungsi Deskripsi Perbandingan ==========
+def describe_comparison(df):
+    summary = df.groupby("device").mean(numeric_only=True)
+    if len(summary) < 2:
+        return "⚠️ Hanya satu jenis device terdeteksi (Desktop atau Mobile). Tidak bisa dibandingkan."
 
-    st.markdown(f"""
-    ⚡ **Perbandingan Umum**  
-    - Rata-rata total waktu **Desktop**: {total_d:.2f} ms  
-    - Rata-rata total waktu **Mobile**: {total_m:.2f} ms  
-    👉 Secara keseluruhan, **{faster} {ratio:.1f}× lebih cepat** dibanding lainnya.
-    """)
+    desktop, mobile = summary.loc["Desktop"], summary.loc["Mobile"]
+    ratio = desktop["total"] / mobile["total"] if mobile["total"] > 0 else np.nan
+    desc = f"""
+⚡ **Rata-rata total waktu Desktop:** {desktop['total']:.2f} ms  
+⚡ **Rata-rata total waktu Mobile:** {mobile['total']:.2f} ms  
 
-    desc_lines = []
-    for comp in df_compare.index:
-        diff = df_compare.loc[comp, "Perbedaan (Desktop - Mobile)"]
-        if diff > 0:
-            desc_lines.append(f"- {comp} pada **Mobile** lebih cepat {abs(diff):.2f} ms dibanding Desktop.")
-        elif diff < 0:
-            desc_lines.append(f"- {comp} pada **Desktop** lebih cepat {abs(diff):.2f} ms dibanding Mobile.")
-        else:
-            desc_lines.append(f"- {comp} memiliki waktu yang hampir sama di kedua perangkat.")
+👉 Secara keseluruhan, **Mobile {ratio:.2f}x lebih cepat dibanding Desktop.**
 
-    st.markdown("### 📊 Detail Perbedaan Tiap Komponen")
-    st.markdown("\n".join(desc_lines))
+### 📊 Detail Perbedaan Tiap Komponen:
+"""
+    for col in ["dns", "connect", "ssl", "ttfb", "receive", "total"]:
+        diff = desktop[col] - mobile[col]
+        faster = "Mobile" if diff > 0 else "Desktop"
+        desc += f"- {col.upper()} pada **{faster}** lebih cepat {abs(diff):.2f} ms.\n"
 
-    st.success("✅ Analisis selesai! Scroll ke atas untuk melihat grafik dan tabel lengkap.")
+    return desc
+
+# ========== Fungsi Skor Performa ==========
+def performance_score(df):
+    avg_total = df["total"].mean()
+    if avg_total <= 300: score, grade = 95, "A"
+    elif avg_total <= 600: score, grade = 85, "B"
+    elif avg_total <= 1000: score, grade = 70, "C"
+    elif avg_total <= 2000: score, grade = 55, "D"
+    else: score, grade = 40, "E"
+    return score, grade
+
+# ========== Fungsi Bottleneck Detection ==========
+def find_bottlenecks(df):
+    slowest = df.sort_values("total", ascending=False).head(5)
+    domain_slowest = df.copy()
+    domain_slowest["domain"] = domain_slowest["url"].apply(lambda x: x.split("/")[2] if "//" in x else x)
+    domain_avg = domain_slowest.groupby("domain")["total"].mean().sort_values(ascending=False).head(5)
+    return slowest, domain_avg
+
+# ========== Main Logic ==========
+if uploaded_file:
+    har_data = json.load(uploaded_file)
+    df = extract_metrics(har_data)
+
+    st.subheader("📋 Data Ekstraksi")
+    st.dataframe(df, use_container_width=True)
+
+    # Grafik bar perbandingan
+    st.subheader("📈 Perbandingan Komponen (Desktop vs Mobile)")
+    avg_df = df.groupby("device")[["dns", "connect", "ssl", "ttfb", "receive", "total"]].mean().reset_index()
+    fig = px.bar(
+        avg_df.melt(id_vars=["device"], value_vars=["dns", "connect", "ssl", "ttfb", "receive", "total"]),
+        x="variable", y="value", color="device",
+        barmode="group",
+        labels={"variable": "Metrik", "value": "Waktu (ms)"},
+        title="Rata-rata Waktu Komponen Desktop vs Mobile"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Waterfall chart
+    st.subheader("🌊 Waterfall Timeline")
+    df_timeline = df.sort_values("startedDateTime")
+    fig2 = px.timeline(
+        df_timeline,
+        x_start="startedDateTime",
+        x_end="end_time",
+        y="url",
+        color="device",
+        title="Timeline Request (Waterfall Chart)"
+    )
+    fig2.update_yaxes(showticklabels=False)
+    st.plotly_chart(fig2, use_container_width=True)
+
+    # Analisis & interpretasi
+    st.subheader("🧠 Analisis & Interpretasi")
+    st.markdown(describe_comparison(df))
+
+    # Skor performa
+    st.subheader("🏁 Skor Performa")
+    score, grade = performance_score(df)
+    st.metric("Performance Score", f"{score}/100", f"Grade {grade}")
+
+    # Bottleneck detection
+    st.subheader("⚠️ Deteksi Bottleneck")
+    slowest, domain_avg = find_bottlenecks(df)
+    st.markdown("### ⏱️ Top 5 Request Paling Lambat:")
+    st.dataframe(slowest[["url", "total", "ttfb", "receive"]])
+
+    st.markdown("### 🌐 Domain dengan Waktu Rata-rata Paling Lambat:")
+    st.dataframe(domain_avg)
+
+    # Insight tambahan
+    st.subheader("📊 Insight Tambahan")
+    domain_counts = df["url"].apply(lambda x: x.split("/")[2] if "//" in x else x).value_counts()
+    top_domain = domain_counts.index[0]
+    st.markdown(f"🔹 Domain paling sering diakses: **{top_domain}** ({domain_counts.iloc[0]} kali).")
+    st.markdown(f"🔹 Total request: **{len(df)}** entries.")
+
 else:
-    st.info("⬆️ Silakan upload kedua file HAR (Desktop & Mobile) untuk memulai analisis.")
+    st.info("⬆️ Upload file HAR untuk memulai analisis performa.")
+
+st.markdown("---")
+st.caption("Dibuat dengan ❤️ oleh HAR Performance Analyzer — Pro Edition")
