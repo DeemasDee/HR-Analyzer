@@ -77,7 +77,6 @@ def describe_comparison(df):
 ⚡ **Rata-rata total waktu Desktop:** {desktop['total']:.2f} ms  
 ⚡ **Rata-rata total waktu Mobile:** {mobile['total']:.2f} ms  
 
-👉 Secara keseluruhan, **Mobile {ratio:.2f}x lebih cepat dibanding Desktop.**
 
 ### 📊 Detail Perbedaan Tiap Komponen:
 """
