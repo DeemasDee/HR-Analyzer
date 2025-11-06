@@ -1,102 +1,167 @@
 import streamlit as st
-import pandas as pd
 import json
-import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
 from sklearn.ensemble import IsolationForest
+import numpy as np
 
-st.set_page_config(page_title="HAR Performance Analyzer", layout="wide")
+# =============================
+# ⚙️ Fungsi: Ekstraksi HAR Data
+# =============================
+def parse_har(file):
+    data = json.load(file)
+    entries = data["log"]["entries"]
 
-st.title("📊 HAR Performance Analyzer (Machine Learning Edition)")
-st.markdown("Upload file `.har` dari Chrome DevTools untuk menganalisis performa request secara detail.")
+    records = []
+    for e in entries:
+        timings = e["timings"]
+        url = e["request"]["url"]
 
-uploaded_file = st.file_uploader("Unggah file HAR", type=["har"])
+        total_time = e["time"]
+        dns = max(timings.get("dns", 0), 0)
+        connect = max(timings.get("connect", 0), 0)
+        ssl = max(timings.get("ssl", 0), 0)
+        wait = max(timings.get("wait", 0), 0)  # TTFB
+        receive = max(timings.get("receive", 0), 0)
+        blocked = max(timings.get("blocked", 0), 0)
 
-if uploaded_file:
-    try:
-        har_data = json.load(uploaded_file)
-        entries = har_data["log"]["entries"]
+        records.append({
+            "URL": url,
+            "TotalTime": total_time,
+            "DNS": dns,
+            "Connect": connect,
+            "SSL": ssl,
+            "TTFB": wait,
+            "Receive": receive,
+            "Blocked": blocked,
+        })
 
-        rows = []
-        for e in entries:
-            t = e["timings"]
-            url = e["request"]["url"]
-            domain = url.split("/")[2] if "://" in url else url
+    df = pd.DataFrame(records)
+    return df
 
-            dns = max(t.get("dns", 0), 0)
-            connect = max(t.get("connect", 0), 0)
-            ssl = max(t.get("ssl", 0), 0)
-            send = max(t.get("send", 0), 0)
-            wait = max(t.get("wait", 0), 0)
-            receive = max(t.get("receive", 0), 0)
-            total = dns + connect + ssl + send + wait + receive
 
-            rows.append({
-                "domain": domain,
-                "dns": dns,
-                "connect": connect,
-                "ssl": ssl,
-                "send": send,
-                "ttfb": wait,
-                "receive": receive,
-                "total": total,
-                "method": e["request"]["method"],
-                "status": e["response"]["status"],
-                "mimeType": e["response"]["content"].get("mimeType", "")
-            })
+# =============================
+# ⚙️ Analisis Statistik & ML
+# =============================
+def analyze_performance(df):
+    summary = df.describe().T[["mean", "max", "min"]].round(2)
 
-        df = pd.DataFrame(rows)
+    # Deteksi anomali dengan Isolation Forest
+    features = df[["TotalTime", "DNS", "Connect", "SSL", "TTFB", "Receive"]]
+    model = IsolationForest(contamination=0.05, random_state=42)
+    df["anomaly"] = model.fit_predict(features)
+    anomalies = df[df["anomaly"] == -1]
 
-        st.subheader("📋 Preview Data")
-        st.dataframe(df.head(20))
+    dominant_phase = summary["mean"].idxmax()
+    avg_total = summary.loc["TotalTime", "mean"]
 
-        # --- Analisis ---
-        X = df[["dns", "connect", "ssl", "ttfb", "receive", "total"]].fillna(0)
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+    return summary, anomalies, dominant_phase, avg_total
 
-        kmeans = KMeans(n_clusters=3, random_state=42, n_init="auto")
-        df["cluster"] = kmeans.fit_predict(X_scaled)
 
-        iso = IsolationForest(contamination=0.1, random_state=42)
-        df["anomaly"] = iso.fit_predict(X_scaled)
-        df["anomaly"] = df["anomaly"].map({1: "Normal", -1: "Anomali"})
+# =============================
+# 🎨 Visualisasi
+# =============================
+def plot_performance_comparison(df1, df2, label1, label2):
+    metrics = ["DNS", "Connect", "SSL", "TTFB", "Receive", "TotalTime"]
+    avg1 = df1[metrics].mean()
+    avg2 = df2[metrics].mean()
 
-        # --- Statistik umum ---
-        st.subheader("📈 Statistik Rata-rata per Cluster")
-        cluster_stats = df.groupby("cluster")[["dns", "connect", "ssl", "ttfb", "receive", "total"]].mean()
-        st.dataframe(cluster_stats)
+    x = np.arange(len(metrics))
+    width = 0.35
 
-        fig, ax = plt.subplots(figsize=(8,4))
-        cluster_stats.plot(kind="bar", ax=ax)
-        plt.title("Rata-rata Waktu Tiap Cluster (ms)")
-        plt.ylabel("Waktu (ms)")
-        plt.xlabel("Cluster")
-        st.pyplot(fig)
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.bar(x - width/2, avg1, width, label=label1)
+    ax.bar(x + width/2, avg2, width, label=label2)
+    ax.set_xticks(x)
+    ax.set_xticklabels(metrics)
+    ax.set_ylabel("Waktu (ms)")
+    ax.set_title("Perbandingan Performansi Web")
+    ax.legend()
+    st.pyplot(fig)
 
-        # --- Scatter plot ---
-        st.subheader("📉 Scatter Plot: TTFB vs Total Load")
-        fig2, ax2 = plt.subplots(figsize=(8,5))
-        scatter = ax2.scatter(df["ttfb"], df["total"], 
-                              c=(df["anomaly"]=="Anomali"), cmap="coolwarm", alpha=0.7)
-        ax2.set_xlabel("TTFB (ms)")
-        ax2.set_ylabel("Total Load (ms)")
-        plt.title("Deteksi Anomali Berdasarkan TTFB vs Total Load")
-        st.pyplot(fig2)
 
-        # --- Deteksi anomali ---
-        st.subheader("🚨 Request dengan Performa Buruk (Anomali)")
-        st.dataframe(df[df["anomaly"]=="Anomali"][["domain", "ttfb", "total", "status", "mimeType"]])
+# =============================
+# 🧠 Deskripsi Perbandingan
+# =============================
+def generate_description(summary1, summary2, label1, label2):
+    desc = []
 
-        # --- Unduh hasil ---
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("💾 Unduh Hasil Analisis (CSV)", csv, "har_analysis_result.csv", "text/csv")
+    for metric in ["DNS", "Connect", "SSL", "TTFB", "Receive", "TotalTime"]:
+        avg1 = summary1.loc[metric, "mean"]
+        avg2 = summary2.loc[metric, "mean"]
+        diff = avg2 - avg1
+        if diff > 0:
+            desc.append(f"- {metric} pada **{label2}** lebih lambat {diff:.1f} ms dibanding {label1}.")
+        else:
+            desc.append(f"- {metric} pada **{label2}** lebih cepat {abs(diff):.1f} ms dibanding {label1}.")
 
-        st.success("✅ Analisis selesai! Gunakan grafik dan tabel di atas untuk evaluasi performa request.")
+    total1 = summary1.loc["TotalTime", "mean"]
+    total2 = summary2.loc["TotalTime", "mean"]
 
-    except Exception as e:
-        st.error(f"Gagal membaca file HAR: {e}")
+    faster = label1 if total1 < total2 else label2
+    slower = label2 if faster == label1 else label1
+    ratio = (max(total1, total2) / min(total1, total2))
+
+    summary_text = f"""
+    ⚡ **Perbandingan Umum**
+    - Rata-rata total waktu {label1}: {total1:.2f} ms  
+    - Rata-rata total waktu {label2}: {total2:.2f} ms  
+    👉 Secara keseluruhan, **{faster}** {ratio:.1f}x lebih cepat dibanding **{slower}**.
+
+    📊 **Detail Perbedaan Tiap Komponen:**
+    """ + "\n".join(desc)
+
+    return summary_text
+
+
+# =============================
+# 🚀 Streamlit App
+# =============================
+st.title("📈 Web Performance Comparison (Desktop vs Mobile)")
+st.write("Unggah dua file `.har` untuk membandingkan performa situs (misalnya versi Desktop vs Mobile).")
+
+col1, col2 = st.columns(2)
+with col1:
+    desktop_file = st.file_uploader("💻 File HAR - Desktop", type=["har"])
+with col2:
+    mobile_file = st.file_uploader("📱 File HAR - Mobile", type=["har"])
+
+if desktop_file and mobile_file:
+    st.success("✅ Kedua file berhasil diunggah!")
+
+    df_desktop = parse_har(desktop_file)
+    df_mobile = parse_har(mobile_file)
+
+    # Analisis masing-masing
+    summary_d, anomalies_d, dominant_d, avg_d = analyze_performance(df_desktop)
+    summary_m, anomalies_m, dominant_m, avg_m = analyze_performance(df_mobile)
+
+    st.subheader("📋 Ringkasan Statistik")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### 💻 Desktop")
+        st.dataframe(summary_d)
+    with col2:
+        st.markdown("### 📱 Mobile")
+        st.dataframe(summary_m)
+
+    st.subheader("📊 Grafik Perbandingan")
+    plot_performance_comparison(df_desktop, df_mobile, "Desktop", "Mobile")
+
+    st.subheader("🧠 Analisis & Interpretasi")
+    description = generate_description(summary_d, summary_m, "Desktop", "Mobile")
+    st.markdown(description)
+
+    st.subheader("🚨 Deteksi Anomali (Outlier)")
+    st.write("Request dengan waktu tidak normal (berpotensi bottleneck).")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### 💻 Desktop Anomali")
+        st.dataframe(anomalies_d[["URL", "TotalTime", "TTFB", "Receive"]].head(10))
+    with col2:
+        st.markdown("### 📱 Mobile Anomali")
+        st.dataframe(anomalies_m[["URL", "TotalTime", "TTFB", "Receive"]].head(10))
+
 else:
-    st.info("Unggah file `.har` untuk memulai analisis.")
+    st.info("Unggah dua file HAR (desktop & mobile) untuk memulai analisis.")
