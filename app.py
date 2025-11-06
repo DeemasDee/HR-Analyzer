@@ -5,9 +5,9 @@ import plotly.express as px
 import numpy as np
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="HAR Performance Analyzer Pro", layout="wide")
+st.set_page_config(page_title="HAR Performance Analyzer", layout="wide")
 
-st.title("📊 HAR Performance Analyzer — Pro Edition")
+st.title("📊 HAR Performance Analyzer")
 st.markdown("""
 Analisis performa web otomatis dari file **.HAR** (HTTP Archive).  
 Menampilkan metrik teknis, perbandingan **Desktop vs Mobile**, grafik **timeline waterfall**, serta skor performa dan deteksi **bottleneck**.
@@ -163,4 +163,4 @@ else:
     st.info("⬆️ Upload file HAR untuk memulai analisis performa.")
 
 st.markdown("---")
-st.caption("Dibuat dengan ❤️ oleh HAR Performance Analyzer — Pro Edition")
+st.caption("Version Dev v.1.0001")
